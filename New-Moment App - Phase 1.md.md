@@ -252,6 +252,8 @@ expo install expo-sensors
 # Full Sensor Service + Payload (ONE FILE)
 // sensorService.js
 
+// sensorService.js
+
 import { Accelerometer, Gyroscope, Pedometer } from 'expo-sensors';
 
 class SensorService {
@@ -263,59 +265,102 @@ class SensorService {
   gyroSub = null;
   stepSub = null;
 
-  // 🧠 For live balance
+  hasAccel = false;
+  hasGyro = false;
+  hasPedometer = false;
+
   balanceCallback = null;
   prevMovement = 0;
 
+  // 🔍 Check sensor availability
+  async checkSensors() {
+    this.hasAccel = await Accelerometer.isAvailableAsync();
+    this.hasGyro = await Gyroscope.isAvailableAsync();
+    this.hasPedometer = await Pedometer.isAvailableAsync();
+
+    return {
+      accel: this.hasAccel,
+      gyro: this.hasGyro,
+      pedometer: this.hasPedometer
+    };
+  }
+
   // ▶️ START collecting
   async start() {
+    await this.checkSensors();
+
     this.accelData = [];
     this.gyroData = [];
     this.steps = 0;
     this.prevMovement = 0;
 
-    Accelerometer.setUpdateInterval(500);
-    Gyroscope.setUpdateInterval(500);
-
     // 📊 Accelerometer
-    this.accelSub = Accelerometer.addListener(data => {
-      this.accelData.push({
-        x: data.x,
-        y: data.y,
-        z: data.z,
-        timestamp: Date.now()
+    if (this.hasAccel) {
+      Accelerometer.setUpdateInterval(500);
+      this.accelSub = Accelerometer.addListener(data => {
+        this.accelData.push({
+          x: data.x,
+          y: data.y,
+          z: data.z,
+          timestamp: Date.now()
+        });
       });
-    });
+    }
 
-    // 🌀 Gyroscope (used for balance)
-    this.gyroSub = Gyroscope.addListener(data => {
-      const point = {
-        x: data.x,
-        y: data.y,
-        z: data.z,
-        timestamp: Date.now()
-      };
+    // 🌀 Gyroscope (preferred for balance)
+    if (this.hasGyro) {
+      Gyroscope.setUpdateInterval(500);
+      this.gyroSub = Gyroscope.addListener(data => {
+        const movementRaw =
+          Math.abs(data.x) + Math.abs(data.y) + Math.abs(data.z);
 
-      this.gyroData.push(point);
+        const movement = this.smoothMovement(movementRaw);
+        const status = this.getBalanceStatus(movement);
 
-      // 🔥 LIVE BALANCE CALCULATION
-      const movementRaw =
-        Math.abs(data.x) + Math.abs(data.y) + Math.abs(data.z);
+        this.gyroData.push({
+          x: data.x,
+          y: data.y,
+          z: data.z,
+          timestamp: Date.now()
+        });
 
-      const movement = this.smoothMovement(movementRaw);
+        if (this.balanceCallback) {
+          this.balanceCallback(status);
+        }
+      });
+    } else if (this.hasAccel) {
+      // 🔄 Fallback using accelerometer
+      this.accelSub = Accelerometer.addListener(data => {
+        const movementRaw =
+          Math.abs(data.x) + Math.abs(data.y) + Math.abs(data.z);
 
-      const status = this.getBalanceStatus(movement);
+        const movement = this.smoothMovement(movementRaw);
+        const status = this.getBalanceStatus(movement);
 
-      // 🎯 send to UI
+        if (this.balanceCallback) {
+          this.balanceCallback({
+            ...status,
+            label: status.label + " (approx)"
+          });
+        }
+      });
+    } else {
+      // ❌ No sensor support
       if (this.balanceCallback) {
-        this.balanceCallback(status);
+        this.balanceCallback({
+          label: "⚪ Not supported",
+          level: 0,
+          color: "gray"
+        });
       }
-    });
+    }
 
     // 🚶 Steps
-    this.stepSub = Pedometer.watchStepCount(result => {
-      this.steps = result.steps;
-    });
+    if (this.hasPedometer) {
+      this.stepSub = Pedometer.watchStepCount(result => {
+        this.steps = result.steps;
+      });
+    }
   }
 
   // ⏹ STOP collecting
@@ -327,7 +372,12 @@ class SensorService {
     return {
       accelData: this.accelData,
       gyroData: this.gyroData,
-      steps: this.steps
+      steps: this.steps,
+      deviceCapabilities: {
+        hasAccel: this.hasAccel,
+        hasGyro: this.hasGyro,
+        hasPedometer: this.hasPedometer
+      }
     };
   }
 
@@ -336,14 +386,14 @@ class SensorService {
     this.balanceCallback = callback;
   }
 
-  // 🧮 Smooth sensor noise
+  // 🧮 Smooth movement
   smoothMovement(current) {
     const smoothed = this.prevMovement * 0.7 + current * 0.3;
     this.prevMovement = smoothed;
     return smoothed;
   }
 
-  // 🎯 Convert movement → human status
+  // 🎯 Balance status logic
   getBalanceStatus(movement) {
     if (movement < 0.5) {
       return {
@@ -366,7 +416,7 @@ class SensorService {
     }
   }
 
-  // 🧮 CALCULATE METRICS
+  // 🧮 Calculate metrics
   calculateMetrics(accelData, gyroData) {
     let totalIntensity = 0;
     let totalStability = 0;
@@ -387,11 +437,11 @@ class SensorService {
 
       avgStability: gyroData.length
         ? Number((totalStability / gyroData.length).toFixed(2))
-        : 0
+        : null // null if no gyro
     };
   }
 
-  // 📦 PREPARE FINAL PAYLOAD
+  // 📦 Prepare API payload
   preparePayload({
     programExerciseId,
     sessionId,
@@ -419,6 +469,12 @@ class SensorService {
       avg_stability: avgStability,
       total_steps: this.steps,
 
+      device_capabilities: {
+        has_accel: this.hasAccel,
+        has_gyro: this.hasGyro,
+        has_pedometer: this.hasPedometer
+      },
+
       sensor_data: {
         accelerometer: accelData.map(d => ({
           x: Number(d.x.toFixed(4)),
@@ -440,24 +496,24 @@ class SensorService {
 // ✅ Export singleton
 export default new SensorService();
 
-
-# Usage Example (VERY IMPORTANT)
+# 📲 ✅ Example Usage
 import SensorService from './sensorService';
-import { useState, useEffect } from 'react';
+import { useEffect, useState } from 'react';
 
 const [balance, setBalance] = useState("Checking...");
 
+// 🎯 Subscribe to live balance
 useEffect(() => {
   SensorService.onBalanceUpdate((status) => {
     setBalance(status.label);
   });
 }, []);
 
-# ▶️ Start
+// ▶️ Start
 await SensorService.start();
 
-⏹ Finish
-SensorService.stop();
+// ⏹ Finish
+const result = SensorService.stop();
 
 const payload = SensorService.preparePayload({
   programExerciseId: 12,
