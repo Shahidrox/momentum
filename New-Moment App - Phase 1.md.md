@@ -243,3 +243,141 @@ def get_or_create_session(db, user_id, program_id=None):
 
     return new_session
 ```
+
+### React
+
+```bash
+expo install expo-sensors
+
+# Full Sensor Service + Payload (ONE FILE)
+// sensorService.js
+
+import { Accelerometer, Gyroscope, Pedometer } from 'expo-sensors';
+
+class SensorService {
+  accelData = [];
+  gyroData = [];
+  steps = 0;
+
+  accelSub = null;
+  gyroSub = null;
+  stepSub = null;
+
+  // ▶️ START collecting
+  async start() {
+    this.accelData = [];
+    this.gyroData = [];
+    this.steps = 0;
+
+    Accelerometer.setUpdateInterval(500);
+    Gyroscope.setUpdateInterval(500);
+
+    this.accelSub = Accelerometer.addListener(data => {
+      this.accelData.push({
+        x: data.x,
+        y: data.y,
+        z: data.z,
+        timestamp: Date.now()
+      });
+    });
+
+    this.gyroSub = Gyroscope.addListener(data => {
+      this.gyroData.push({
+        x: data.x,
+        y: data.y,
+        z: data.z,
+        timestamp: Date.now()
+      });
+    });
+
+    this.stepSub = Pedometer.watchStepCount(result => {
+      this.steps = result.steps;
+    });
+  }
+
+  // ⏹ STOP collecting
+  stop() {
+    this.accelSub?.remove();
+    this.gyroSub?.remove();
+    this.stepSub?.remove();
+
+    return {
+      accelData: this.accelData,
+      gyroData: this.gyroData,
+      steps: this.steps
+    };
+  }
+
+  // 🧮 CALCULATE METRICS
+  calculateMetrics(accelData, gyroData) {
+    let totalIntensity = 0;
+    let totalStability = 0;
+
+    accelData.forEach(d => {
+      totalIntensity += Math.abs(d.x) + Math.abs(d.y) + Math.abs(d.z);
+    });
+
+    gyroData.forEach(d => {
+      totalStability += 1 / (Math.abs(d.x) + Math.abs(d.y) + Math.abs(d.z) + 0.1);
+    });
+
+    return {
+      avgIntensity: accelData.length
+        ? Number((totalIntensity / accelData.length).toFixed(2))
+        : 0,
+
+      avgStability: gyroData.length
+        ? Number((totalStability / gyroData.length).toFixed(2))
+        : 0
+    };
+  }
+
+  // 📦 PREPARE FINAL PAYLOAD
+  preparePayload({
+    programExerciseId,
+    sessionId,
+    duration,
+    reps,
+    intensity
+  }) {
+    const MAX_POINTS = 200;
+
+    const accelData = this.accelData.slice(-MAX_POINTS);
+    const gyroData = this.gyroData.slice(-MAX_POINTS);
+
+    const { avgIntensity, avgStability } =
+      this.calculateMetrics(accelData, gyroData);
+
+    return {
+      program_exercise_id: programExerciseId,
+      session_id: sessionId,
+
+      duration,
+      reps: reps || null,
+      intensity,
+
+      avg_intensity: avgIntensity,
+      avg_stability: avgStability,
+      total_steps: this.steps,
+
+      sensor_data: {
+        accelerometer: accelData.map(d => ({
+          x: Number(d.x.toFixed(4)),
+          y: Number(d.y.toFixed(4)),
+          z: Number(d.z.toFixed(4)),
+          timestamp: d.timestamp
+        })),
+        gyroscope: gyroData.map(d => ({
+          x: Number(d.x.toFixed(4)),
+          y: Number(d.y.toFixed(4)),
+          z: Number(d.z.toFixed(4)),
+          timestamp: d.timestamp
+        }))
+      }
+    };
+  }
+}
+
+// ✅ Export singleton
+export default new SensorService();
+```
