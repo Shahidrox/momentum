@@ -114,3 +114,132 @@ WorkoutSession → grouped session<br/>
 DailyStats → dashboard analytics<br/>
 
 
+### Core Logic
+
+```python
+from datetime import date
+
+def process_workout(db, user_id, data):
+    
+    # 🎯 1. Calculate score
+    score = calculate_score(
+        data.duration,
+        data.intensity,
+        data.avg_stability
+    )
+
+    # 🏋️ 2. Create Workout
+    workout = Workout(
+        user_id=user_id,
+        program_exercise_id=data.program_exercise_id,
+        session_id=data.session_id,
+        duration=data.duration,
+        reps=data.reps,
+        intensity=data.intensity,
+        score=score,
+        avg_intensity=data.avg_intensity,
+        avg_stability=data.avg_stability,
+        total_steps=data.total_steps,
+    )
+
+    db.add(workout)
+    db.commit()
+    db.refresh(workout)
+
+    # 📦 3. Update Session
+    update_session(db, data.session_id, data, score)
+
+    # 📊 4. Update Daily Stats
+    update_daily_stats(db, user_id, data, score)
+
+    return workout
+
+# Score Calculation
+def calculate_score(duration, intensity, stability):
+    base = (duration / 60) * intensity
+    stability_bonus = (stability or 0) * 0.5
+    return round(base + stability_bonus, 2)
+
+# Create/Update WorkoutSession
+def update_session(db, session_id, data, score):
+    session = db.query(WorkoutSession).filter_by(id=session_id).first()
+
+    if not session:
+        return
+
+    session.total_duration += data.duration
+    session.total_score += score
+    session.total_exercises += 1
+
+    db.commit()
+
+# Create/Update DailyStats
+def update_daily_stats(db, user_id, data, score):
+    today = date.today()
+
+    stats = db.query(DailyStats).filter_by(
+        user_id=user_id,
+        date=today
+    ).first()
+
+    if not stats:
+        stats = DailyStats(
+            user_id=user_id,
+            date=today,
+            total_workouts=0,
+            total_duration=0,
+            total_score=0,
+            total_steps=0,
+            avg_intensity=0,
+            avg_stability=0,
+            streak_day=1
+        )
+        db.add(stats)
+
+    # Aggregate
+    stats.total_workouts += 1
+    stats.total_duration += data.duration
+    stats.total_score += score
+    stats.total_steps += data.total_steps or 0
+
+    # Running averages
+    count = stats.total_workouts
+
+    stats.avg_intensity = (
+        (stats.avg_intensity * (count - 1) + (data.avg_intensity or 0)) / count
+    )
+
+    stats.avg_stability = (
+        (stats.avg_stability * (count - 1) + (data.avg_stability or 0)) / count
+    )
+
+    db.commit()
+```
+
+### Check this
+
+```python
+from datetime import datetime, timedelta
+
+def get_or_create_session(db, user_id, program_id=None):
+    session = db.query(WorkoutSession).filter_by(
+        user_id=user_id,
+        status="active"
+    ).order_by(WorkoutSession.created_at.desc()).first()
+
+    if session:
+        return session  # ✅ reuse
+
+    # ❗ create new session
+    new_session = WorkoutSession(
+        user_id=user_id,
+        program_id=program_id,
+        status="active"
+    )
+
+    db.add(new_session)
+    db.commit()
+    db.refresh(new_session)
+
+    return new_session
+```
