@@ -263,15 +263,21 @@ class SensorService {
   gyroSub = null;
   stepSub = null;
 
+  // 🧠 For live balance
+  balanceCallback = null;
+  prevMovement = 0;
+
   // ▶️ START collecting
   async start() {
     this.accelData = [];
     this.gyroData = [];
     this.steps = 0;
+    this.prevMovement = 0;
 
     Accelerometer.setUpdateInterval(500);
     Gyroscope.setUpdateInterval(500);
 
+    // 📊 Accelerometer
     this.accelSub = Accelerometer.addListener(data => {
       this.accelData.push({
         x: data.x,
@@ -281,15 +287,32 @@ class SensorService {
       });
     });
 
+    // 🌀 Gyroscope (used for balance)
     this.gyroSub = Gyroscope.addListener(data => {
-      this.gyroData.push({
+      const point = {
         x: data.x,
         y: data.y,
         z: data.z,
         timestamp: Date.now()
-      });
+      };
+
+      this.gyroData.push(point);
+
+      // 🔥 LIVE BALANCE CALCULATION
+      const movementRaw =
+        Math.abs(data.x) + Math.abs(data.y) + Math.abs(data.z);
+
+      const movement = this.smoothMovement(movementRaw);
+
+      const status = this.getBalanceStatus(movement);
+
+      // 🎯 send to UI
+      if (this.balanceCallback) {
+        this.balanceCallback(status);
+      }
     });
 
+    // 🚶 Steps
     this.stepSub = Pedometer.watchStepCount(result => {
       this.steps = result.steps;
     });
@@ -308,6 +331,41 @@ class SensorService {
     };
   }
 
+  // 🎣 Subscribe to live balance updates
+  onBalanceUpdate(callback) {
+    this.balanceCallback = callback;
+  }
+
+  // 🧮 Smooth sensor noise
+  smoothMovement(current) {
+    const smoothed = this.prevMovement * 0.7 + current * 0.3;
+    this.prevMovement = smoothed;
+    return smoothed;
+  }
+
+  // 🎯 Convert movement → human status
+  getBalanceStatus(movement) {
+    if (movement < 0.5) {
+      return {
+        label: "🟢 Very good",
+        level: 3,
+        color: "green"
+      };
+    } else if (movement < 1.5) {
+      return {
+        label: "🟡 Normal",
+        level: 2,
+        color: "orange"
+      };
+    } else {
+      return {
+        label: "🔴 Need more effort",
+        level: 1,
+        color: "red"
+      };
+    }
+  }
+
   // 🧮 CALCULATE METRICS
   calculateMetrics(accelData, gyroData) {
     let totalIntensity = 0;
@@ -318,7 +376,8 @@ class SensorService {
     });
 
     gyroData.forEach(d => {
-      totalStability += 1 / (Math.abs(d.x) + Math.abs(d.y) + Math.abs(d.z) + 0.1);
+      totalStability +=
+        1 / (Math.abs(d.x) + Math.abs(d.y) + Math.abs(d.z) + 0.1);
     });
 
     return {
@@ -380,4 +439,31 @@ class SensorService {
 
 // ✅ Export singleton
 export default new SensorService();
+
+
+# Usage Example (VERY IMPORTANT)
+import SensorService from './sensorService';
+import { useState, useEffect } from 'react';
+
+const [balance, setBalance] = useState("Checking...");
+
+useEffect(() => {
+  SensorService.onBalanceUpdate((status) => {
+    setBalance(status.label);
+  });
+}, []);
+
+# ▶️ Start
+await SensorService.start();
+
+⏹ Finish
+SensorService.stop();
+
+const payload = SensorService.preparePayload({
+  programExerciseId: 12,
+  sessionId: 5,
+  duration: 60,
+  reps: 10,
+  intensity: 4
+});
 ```
